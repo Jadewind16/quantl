@@ -1,0 +1,51 @@
+# config/exchanges.yaml
+# 交易所配置
+
+exchanges:
+  # 推荐: 无地区限制
+  gate:
+    testnet: false
+    enable_rate_limit: true
+    options:
+      defaultType: swap
+    timeout: 30000
+    
+  mexc:
+    testnet: false
+    enable_rate_limit: true
+    options:
+      defaultType: swap
+    timeout: 30000
+    
+  bitget:
+    testnet: false
+    enable_rate_limit: true
+    options:
+      defaultType: swap
+    timeout: 30000
+
+  # 可能有地区限制
+  okx:
+    testnet: false
+    enable_rate_limit: true
+    options:
+      defaultType: swap
+    timeout: 30000
+    
+  binance:
+    testnet: true
+    enable_rate_limit: true
+    options:
+      defaultType: future
+      adjustForTimeDifference: true
+    timeout: 30000
+    
+  bybit:
+    testnet: true
+    enable_rate_limit: true
+    options:
+      defaultType: linear
+    timeout: 30000
+
+default_exchange: gate
+

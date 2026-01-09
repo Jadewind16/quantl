@@ -1,0 +1,24 @@
+# config/strategies.yaml
+# 策略参数配置
+
+strategies:
+  ma_cross:
+    enabled: true
+    timeframe: 1h
+    symbols:
+      - BTC/USDT
+      - ETH/USDT
+    parameters:
+      short_window: 20
+      long_window: 50
+    
+  rsi_mean_reversion:
+    enabled: false
+    timeframe: 15m
+    symbols:
+      - BTC/USDT
+    parameters:
+      period: 14
+      oversold: 30
+      overbought: 70
+

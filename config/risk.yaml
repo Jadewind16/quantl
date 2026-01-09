@@ -1,0 +1,19 @@
+# config/risk.yaml
+# 风险管理参数
+
+risk_management:
+  max_position_size: 0.1        # 单个仓位最大占比 10%
+  max_leverage: 3               # 最大杠杆
+  max_daily_loss: 0.05          # 最大日亏损 5%
+  max_drawdown: 0.15            # 最大回撤 15%
+  
+  position_sizing:
+    method: kelly                # kelly, fixed, volatility
+    kelly_fraction: 0.25         # Kelly准则的25%
+  
+  stop_loss:
+    enabled: true
+    type: trailing               # fixed, trailing, atr
+    percentage: 0.02             # 2%
+    atr_multiplier: 2.0
+
