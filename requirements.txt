@@ -8,7 +8,7 @@ numpy>=1.24.0               # 数值计算
 python-dotenv>=1.0.0        # 环境变量管理
 
 # ============ 技术指标 ============
-pandas-ta==0.4.71b0         # Pandas技术指标 (beta版本)
+# 指标在 src/strategy/indicators.py 中自己实现，无需额外依赖
 
 # ============ 数据存储 ============
 sqlalchemy>=2.0.0           # 数据库ORM
