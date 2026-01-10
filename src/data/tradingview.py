@@ -32,36 +32,7 @@ class TradingViewDataFetcher:
         '1M': Interval.in_monthly,
     }
     
-    # 交易对映射 (ccxt格式 -> TradingView格式)
-    # 永续合约在 TradingView 上通常是 SYMBOL.P
-    SYMBOL_MAP = {
-        # 主流币
-        'BTC/USDT:USDT': ('BTCUSDT.P', 'BINANCE'),
-        'ETH/USDT:USDT': ('ETHUSDT.P', 'BINANCE'),
-        'BNB/USDT:USDT': ('BNBUSDT.P', 'BINANCE'),
-        'SOL/USDT:USDT': ('SOLUSDT.P', 'BINANCE'),
-        'XRP/USDT:USDT': ('XRPUSDT.P', 'BINANCE'),
-        'DOGE/USDT:USDT': ('DOGEUSDT.P', 'BINANCE'),
-        'ADA/USDT:USDT': ('ADAUSDT.P', 'BINANCE'),
-        'AVAX/USDT:USDT': ('AVAXUSDT.P', 'BINANCE'),
-        'LINK/USDT:USDT': ('LINKUSDT.P', 'BINANCE'),
-        'DOT/USDT:USDT': ('DOTUSDT.P', 'BINANCE'),
-        'MATIC/USDT:USDT': ('MATICUSDT.P', 'BINANCE'),
-        'SHIB/USDT:USDT': ('SHIBUSDT.P', 'BINANCE'),
-        'LTC/USDT:USDT': ('LTCUSDT.P', 'BINANCE'),
-        'TRX/USDT:USDT': ('TRXUSDT.P', 'BINANCE'),
-        'ATOM/USDT:USDT': ('ATOMUSDT.P', 'BINANCE'),
-        'UNI/USDT:USDT': ('UNIUSDT.P', 'BINANCE'),
-        'ETC/USDT:USDT': ('ETCUSDT.P', 'BINANCE'),
-        'FIL/USDT:USDT': ('FILUSDT.P', 'BINANCE'),
-        'APT/USDT:USDT': ('APTUSDT.P', 'BINANCE'),
-        'ARB/USDT:USDT': ('ARBUSDT.P', 'BINANCE'),
-        'OP/USDT:USDT': ('OPUSDT.P', 'BINANCE'),
-        'SUI/USDT:USDT': ('SUIUSDT.P', 'BINANCE'),
-        'NEAR/USDT:USDT': ('NEARUSDT.P', 'BINANCE'),
-        'PEPE/USDT:USDT': ('PEPEUSDT.P', 'BINANCE'),
-        'WIF/USDT:USDT': ('WIFUSDT.P', 'BINANCE'),
-    }
+    # 无需硬编码列表，_convert_symbol 会智能处理
     
     def __init__(self, username: str = None, password: str = None):
         """
@@ -78,48 +49,72 @@ class TradingViewDataFetcher:
             self.tv = TvDatafeed()
             log.info("TradingView: Using anonymous access (limited data)")
     
-    def _convert_symbol(self, symbol: str) -> tuple:
+    def _convert_symbol(self, symbol: str, exchange: str = None) -> tuple:
         """
-        转换交易对格式
+        转换符号格式
         
-        Args:
-            symbol: 各种格式的交易对:
-                - BTC/USDT:USDT (永续合约)
-                - BTC/USDT (现货)
-                - BTCUSDT (简化)
-                - BTC (只有基础货币)
+        支持格式:
+            1. 直接 TradingView 格式: AAPL, BTCUSDT.P, EURUSD
+            2. 指定交易所: AAPL:NASDAQ, BTCUSDT.P:BINANCE
+            3. 加密货币简写: BTC, ETH (自动转为 BTCUSDT.P@BINANCE)
             
         Returns:
             (tv_symbol, exchange) 元组
         """
-        # 标准化输入
         symbol = symbol.upper().strip()
         
-        # 已在映射表中
-        if symbol in self.SYMBOL_MAP:
-            return self.SYMBOL_MAP[symbol]
+        # 1. 用户指定了交易所 (格式: SYMBOL:EXCHANGE)
+        if ':' in symbol and not symbol.endswith(':USDT'):
+            parts = symbol.split(':')
+            if len(parts) == 2:
+                return (parts[0], parts[1])
         
-        # 提取基础货币
-        # 处理各种格式: BTC/USDT:USDT, BTC/USDT, BTCUSDT, BTC
+        # 2. 参数传入交易所
+        if exchange:
+            return (symbol, exchange.upper())
+        
+        # 3. 处理加密货币格式: BTC/USDT:USDT -> BTC
         base = symbol
-        
-        # 移除 :USDT 后缀
         if ':USDT' in base:
             base = base.split(':')[0]
-        
-        # 移除 /USDT
         if '/USDT' in base:
             base = base.split('/')[0]
-        
-        # 移除末尾的 USDT (如 BTCUSDT -> BTC)
         if base.endswith('USDT') and len(base) > 4:
             base = base[:-4]
         
-        # 构建 TradingView 格式
-        tv_symbol = f"{base}USDT.P"
+        # 4. 智能猜测资产类型
+        # 常见加密货币 -> BINANCE 永续
+        crypto_symbols = {'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 
+                         'DOT', 'MATIC', 'SHIB', 'LTC', 'ATOM', 'UNI', 'ARB', 'OP',
+                         'APT', 'SUI', 'NEAR', 'FIL', 'INJ', 'TIA', 'SEI', 'PEPE', 'WIF'}
+        if base in crypto_symbols:
+            return (f"{base}USDT.P", 'BINANCE')
         
-        log.debug(f"Symbol conversion: {symbol} -> {tv_symbol}@BINANCE")
-        return (tv_symbol, 'BINANCE')
+        # 常见美股 -> NASDAQ/NYSE
+        us_stocks = {'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD',
+                    'NFLX', 'COIN', 'MSTR', 'INTC', 'PYPL', 'CRM', 'ADBE', 'ORCL'}
+        if base in us_stocks:
+            return (base, 'NASDAQ')
+        
+        # 常见 ETF -> AMEX
+        etfs = {'SPY', 'QQQ', 'IWM', 'GLD', 'SLV', 'TLT', 'ARKK', 'VTI', 'VOO'}
+        if base in etfs:
+            return (base, 'AMEX')
+        
+        # 外汇对 -> FX
+        if len(base) == 6 and base[:3] in ['EUR', 'GBP', 'USD', 'JPY', 'AUD', 'CAD', 'CHF']:
+            return (base, 'FX')
+        
+        # 黄金白银
+        if base in ['XAUUSD', 'XAGUSD', 'GOLD', 'SILVER']:
+            if base == 'GOLD':
+                base = 'XAUUSD'
+            if base == 'SILVER':
+                base = 'XAGUSD'
+            return (base, 'OANDA')
+        
+        # 5. 默认: 假设是加密货币永续
+        return (f"{base}USDT.P", 'BINANCE')
     
     def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', 
                     limit: int = 100) -> Optional[pd.DataFrame]:
