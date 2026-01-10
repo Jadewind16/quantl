@@ -20,6 +20,7 @@ from src.data.tradingview import TradingViewDataFetcher
 from src.strategy.signals import SignalGenerator, SignalType
 from src.strategy.indicators import calculate_all_indicators
 from src.strategy.advisor import TradingAdvisor, Direction, RiskLevel
+from src.strategy.quant_advisor import QuantAdvisor, MarketRegime
 from src.utils.logger import log
 from src.utils.charts import create_candlestick_chart, create_indicator_chart
 
@@ -45,6 +46,7 @@ class TradingBot(commands.Bot):
         self.fetcher = TradingViewDataFetcher()
         self.signal_generator = SignalGenerator()
         self.advisor = TradingAdvisor()
+        self.quant_advisor = QuantAdvisor()
         
         # 监控配置
         self.watched_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
@@ -631,6 +633,114 @@ class TradingCommands(commands.Cog):
             log.error(f"Error in advice command: {e}")
             await interaction.followup.send(f"Error: {e}")
     
+    @app_commands.command(name="quant", description="Quantitative analysis / 量化分析")
+    @app_commands.describe(
+        symbol="Trading pair (e.g., BTC, ETH)",
+        timeframe="Timeframe for analysis (1h, 4h, 1d)"
+    )
+    async def quant(self, interaction: discord.Interaction, symbol: str = "BTC", timeframe: str = "1h"):
+        """量化分析建议"""
+        await interaction.response.defer()
+        
+        try:
+            formatted_symbol = f"{symbol.upper()}/USDT:USDT"
+            
+            loop = asyncio.get_event_loop()
+            df = await loop.run_in_executor(
+                None,
+                lambda: self.bot.fetcher.get_klines(formatted_symbol, timeframe, limit=150)
+            )
+            
+            if df is None or len(df) < 100:
+                await interaction.followup.send("Insufficient data / 数据不足. Need 100+ candles / 需要100根以上K线")
+                return
+            
+            advice = self.bot.quant_advisor.analyze(df, formatted_symbol)
+            
+            # 颜色
+            if advice.direction.value == "LONG":
+                color = 0x00FF00
+                direction_text = "LONG / 做多"
+            elif advice.direction.value == "SHORT":
+                color = 0xFF0000
+                direction_text = "SHORT / 做空"
+            else:
+                color = 0x808080
+                direction_text = "NEUTRAL / 观望"
+            
+            # 市场状态
+            regime_text = {
+                MarketRegime.TRENDING_UP: "Uptrend / 上涨趋势",
+                MarketRegime.TRENDING_DOWN: "Downtrend / 下跌趋势",
+                MarketRegime.RANGING: "Ranging / 震荡市",
+                MarketRegime.HIGH_VOLATILITY: "High Vol / 高波动",
+            }
+            
+            embed = discord.Embed(
+                title=f"[QUANT] {symbol.upper()}/USDT Analysis / 量化分析",
+                color=color,
+                timestamp=datetime.now()
+            )
+            
+            # 方向和置信度
+            embed.add_field(name="Direction / 方向", value=f"**{direction_text}**", inline=True)
+            embed.add_field(name="Confidence / 置信度", value=f"**{advice.confidence:.1f}%**", inline=True)
+            embed.add_field(name="Win Prob / 胜率", value=f"**{advice.win_probability:.1%}**", inline=True)
+            
+            # 市场状态
+            embed.add_field(
+                name="Market Regime / 市场状态",
+                value=f"**{regime_text.get(advice.market_regime, 'Unknown')}**",
+                inline=True
+            )
+            embed.add_field(
+                name="Volatility / 波动率",
+                value=f"**{advice.volatility_percentile:.0f}th percentile**",
+                inline=True
+            )
+            embed.add_field(
+                name="Position Size / 仓位",
+                value=f"**{advice.position_size_pct:.1f}%**",
+                inline=True
+            )
+            
+            # 价格信息
+            if advice.direction.value != "NEUTRAL":
+                price_info = (
+                    f"```\n"
+                    f"Current/当前:   ${advice.current_price:>12,.2f}\n"
+                    f"Stop Loss/止损: ${advice.stop_loss:>12,.2f}\n"
+                    f"Take Profit/止盈:${advice.take_profit:>12,.2f}\n"
+                    f"```"
+                )
+                embed.add_field(name="Price Levels / 价格", value=price_info, inline=False)
+            
+            # Z-Scores
+            z_text = "```\n"
+            for factor, z in list(advice.z_scores.items())[:5]:
+                bar = "+" * min(int(abs(z) * 2), 5) if z > 0 else "-" * min(int(abs(z) * 2), 5)
+                z_text += f"{factor:15}: {z:+.2f} {bar}\n"
+            z_text += "```"
+            embed.add_field(name="Factor Z-Scores / 因子评分", value=z_text, inline=False)
+            
+            # 信号
+            if advice.signals:
+                signals_text = "\n".join([f"- {s}" for s in advice.signals[:4]])
+                embed.add_field(name="Signals / 信号", value=signals_text, inline=False)
+            
+            # 警告
+            if advice.warnings:
+                warnings_text = "\n".join([f"- {w}" for w in advice.warnings])
+                embed.add_field(name="Warnings / 警告", value=warnings_text, inline=False)
+            
+            embed.set_footer(text=f"Kelly: {advice.kelly_fraction:.1%} | Edge: {advice.statistical_edge:.2%} | {timeframe}")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            log.error(f"Error in quant command: {e}")
+            await interaction.followup.send(f"Error: {e}")
+    
     @app_commands.command(name="help", description="Show all commands")
     async def help_command(self, interaction: discord.Interaction):
         """帮助命令"""
@@ -646,7 +756,8 @@ class TradingCommands(commands.Cog):
             ("/indicators [symbol]", "Get technical indicators"),
             ("/chart [symbol] [timeframe]", "Get candlestick chart"),
             ("/analysis [symbol] [timeframe]", "Full analysis (K-line + RSI + MACD)"),
-            ("/advice [symbol] [timeframe]", "Get trading advice with Entry/SL/TP"),
+            ("/advice [symbol] [timeframe]", "Rule-based trading advice / 规则型建议"),
+            ("/quant [symbol] [timeframe]", "Quantitative analysis / 量化分析"),
             ("/watch [symbol]", "Add to watchlist"),
             ("/unwatch [symbol]", "Remove from watchlist"),
             ("/watchlist", "Show watchlist"),
