@@ -21,6 +21,7 @@ from src.strategy.signals import SignalGenerator, SignalType
 from src.strategy.indicators import calculate_all_indicators
 from src.strategy.advisor import TradingAdvisor, Direction, RiskLevel
 from src.strategy.quant_advisor import QuantAdvisor, MarketRegime
+from src.strategy.ar_model import LinearARModel, load_ar_model, train_ar_model, save_ar_model
 from src.utils.logger import log
 from src.utils.charts import create_candlestick_chart, create_indicator_chart
 
@@ -46,13 +47,107 @@ class TradingBot(commands.Bot):
         self.fetcher = TradingViewDataFetcher()
         self.signal_generator = SignalGenerator()
         self.advisor = TradingAdvisor()
-        self.quant_advisor = QuantAdvisor()
+        
+        # AR 模型路径
+        self.ar_model_path = Path(__file__).parent.parent / "data" / "ar_model.pth"
+        self.ar_model: Optional[LinearARModel] = None
+        self.ar_n_lags = 3
+        
+        # 尝试加载 AR 模型
+        self._load_ar_model()
+        
+        # 初始化 QuantAdvisor (带 AR 模型)
+        self.quant_advisor = QuantAdvisor(
+            ar_model=self.ar_model,
+            ar_n_lags=self.ar_n_lags
+        )
         
         # 监控配置
         self.watched_symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
         self.alert_channel_id: Optional[int] = None
         self.sent_signals = {}
         self.signal_cooldown = 3600
+    
+    def _load_ar_model(self) -> bool:
+        """加载 AR 模型"""
+        try:
+            if self.ar_model_path.exists():
+                self.ar_model = load_ar_model(str(self.ar_model_path))
+                self.ar_n_lags = self.ar_model.n_lags
+                log.info(f"Loaded AR model from {self.ar_model_path} (n_lags={self.ar_n_lags})")
+                return True
+            else:
+                log.warning(f"AR model not found at {self.ar_model_path}")
+                self.ar_model = None
+                return False
+        except Exception as e:
+            log.error(f"Failed to load AR model: {e}")
+            self.ar_model = None
+            return False
+    
+    def reload_ar_model(self) -> bool:
+        """重新加载 AR 模型并更新 QuantAdvisor"""
+        success = self._load_ar_model()
+        if success:
+            self.quant_advisor = QuantAdvisor(
+                ar_model=self.ar_model,
+                ar_n_lags=self.ar_n_lags
+            )
+            log.info("QuantAdvisor updated with new AR model")
+        return success
+    
+    def train_new_model(self, symbol: str, timeframe: str, n_lags: int = 3, limit: int = 500) -> dict:
+        """训练新的 AR 模型"""
+        try:
+            # 获取数据
+            df = self.fetcher.get_klines(symbol, timeframe, limit=limit)
+            if df is None or len(df) < 100:
+                return {"success": False, "error": "Insufficient data"}
+            
+            prices = df['close'].values
+            
+            # 训练模型
+            result = train_ar_model(
+                prices=prices,
+                n_lags=n_lags,
+                forecast_horizon=1,
+                test_size=0.25,
+                n_epochs=1000,
+                lr=0.01,
+                verbose=False
+            )
+            
+            # 保存模型
+            save_ar_model(result.model, str(self.ar_model_path))
+            
+            # 重新加载
+            self.reload_ar_model()
+            
+            return {
+                "success": True,
+                "win_rate": result.win_rate,
+                "sharpe": result.sharpe,
+                "weights": result.weights.tolist(),
+                "bias": result.bias,
+                "n_lags": n_lags
+            }
+        except Exception as e:
+            log.error(f"Failed to train model: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_model_info(self) -> dict:
+        """获取当前模型信息"""
+        if self.ar_model is None:
+            return {"loaded": False}
+        
+        weights, bias = self.ar_model.get_weights()
+        return {
+            "loaded": True,
+            "n_lags": self.ar_model.n_lags,
+            "weights": weights.tolist(),
+            "bias": float(bias),
+            "path": str(self.ar_model_path)
+        }
     
     async def setup_hook(self):
         """Bot 启动时执行"""
@@ -740,7 +835,128 @@ class TradingCommands(commands.Cog):
         except Exception as e:
             log.error(f"Error in quant command: {e}")
             await interaction.followup.send(f"Error: {e}")
-    
+
+    @app_commands.command(name="model", description="Show AR model info / 显示模型信息")
+    async def model_info(self, interaction: discord.Interaction):
+        """显示当前 AR 模型信息"""
+        info = self.bot.get_model_info()
+        
+        if not info["loaded"]:
+            embed = discord.Embed(
+                title="🤖 AR Model Status",
+                description="No model loaded / 模型未加载",
+                color=0xFF0000
+            )
+            embed.add_field(
+                name="Hint / 提示",
+                value="Use `/train_model` to train a new model\n使用 `/train_model` 训练新模型",
+                inline=False
+            )
+        else:
+            embed = discord.Embed(
+                title="🤖 AR Model Info",
+                color=0x00FF00
+            )
+            embed.add_field(name="Status / 状态", value="✅ Loaded / 已加载", inline=True)
+            embed.add_field(name="Lags / 滞后期", value=f"**{info['n_lags']}**", inline=True)
+            embed.add_field(name="Bias / 偏置", value=f"**{info['bias']:.6f}**", inline=True)
+            
+            # 权重解读
+            weights_text = ""
+            for i, w in enumerate(info['weights'], 1):
+                effect = "均值回归 ↩️" if w < 0 else "动量 ➡️"
+                weights_text += f"Lag {i}: `{w:+.4f}` ({effect})\n"
+            embed.add_field(name="Weights / 权重", value=weights_text, inline=False)
+            
+            embed.set_footer(text=f"Path: {info['path']}")
+        
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="reload_model", description="Reload AR model / 重新加载模型")
+    async def reload_model(self, interaction: discord.Interaction):
+        """重新加载 AR 模型"""
+        await interaction.response.defer()
+        
+        success = self.bot.reload_ar_model()
+        
+        if success:
+            info = self.bot.get_model_info()
+            embed = discord.Embed(
+                title="🔄 Model Reloaded / 模型已重载",
+                color=0x00FF00
+            )
+            embed.add_field(name="Lags", value=f"**{info['n_lags']}**", inline=True)
+            embed.add_field(name="Status", value="✅ Ready", inline=True)
+        else:
+            embed = discord.Embed(
+                title="❌ Reload Failed / 重载失败",
+                description="Model file not found or corrupted\n模型文件不存在或损坏",
+                color=0xFF0000
+            )
+        
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="train_model", description="Train new AR model / 训练新模型")
+    @app_commands.describe(
+        symbol="Training data symbol (e.g., BTC, ETH)",
+        timeframe="Timeframe (1m, 5m, 15m, 1h, 4h, 1d)",
+        lags="Number of lags (default: 3)",
+        limit="Data limit (default: 500)"
+    )
+    async def train_model(
+        self, 
+        interaction: discord.Interaction, 
+        symbol: str = "BTC",
+        timeframe: str = "1h",
+        lags: int = 3,
+        limit: int = 500
+    ):
+        """训练新的 AR 模型"""
+        await interaction.response.defer()
+        
+        formatted_symbol = f"{symbol.upper()}/USDT:USDT"
+        
+        # 发送训练中消息
+        training_embed = discord.Embed(
+            title="🏋️ Training Model / 训练中...",
+            description=f"Symbol: {formatted_symbol}\nTimeframe: {timeframe}\nLags: {lags}\nData: {limit} candles",
+            color=0xFFFF00
+        )
+        await interaction.followup.send(embed=training_embed)
+        
+        # 在后台训练
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.bot.train_new_model(formatted_symbol, timeframe, lags, limit)
+        )
+        
+        if result["success"]:
+            embed = discord.Embed(
+                title="✅ Model Trained / 训练完成",
+                color=0x00FF00
+            )
+            embed.add_field(name="Win Rate / 胜率", value=f"**{result['win_rate']:.1%}**", inline=True)
+            embed.add_field(name="Sharpe Ratio", value=f"**{result['sharpe']:.2f}**", inline=True)
+            embed.add_field(name="Lags", value=f"**{result['n_lags']}**", inline=True)
+            
+            # 权重
+            weights_text = ""
+            for i, w in enumerate(result['weights'], 1):
+                effect = "Mean Rev" if w < 0 else "Momentum"
+                weights_text += f"Lag {i}: `{w:+.4f}` ({effect})\n"
+            embed.add_field(name="Weights", value=weights_text, inline=False)
+            
+            embed.set_footer(text="Model saved and loaded / 模型已保存并加载")
+        else:
+            embed = discord.Embed(
+                title="❌ Training Failed / 训练失败",
+                description=f"Error: {result.get('error', 'Unknown error')}",
+                color=0xFF0000
+            )
+        
+        await interaction.channel.send(embed=embed)
+
     @app_commands.command(name="help", description="Show all commands")
     async def help_command(self, interaction: discord.Interaction):
         """帮助命令"""
@@ -758,6 +974,9 @@ class TradingCommands(commands.Cog):
             ("/analysis [symbol] [timeframe]", "Full analysis (K-line + RSI + MACD)"),
             ("/advice [symbol] [timeframe]", "Rule-based trading advice / 规则型建议"),
             ("/quant [symbol] [timeframe]", "Quantitative analysis / 量化分析"),
+            ("/model", "Show AR model info / 显示模型信息"),
+            ("/reload_model", "Reload AR model / 重新加载模型"),
+            ("/train_model [symbol] [timeframe]", "Train new AR model / 训练新模型"),
             ("/watch [symbol]", "Add to watchlist"),
             ("/unwatch [symbol]", "Remove from watchlist"),
             ("/watchlist", "Show watchlist"),
