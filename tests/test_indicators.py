@@ -133,3 +133,4 @@ class TestCalculateAllIndicators:
         assert not pd.isna(last_row['rsi'])
         assert not pd.isna(last_row['macd'])
 
+

@@ -817,16 +817,51 @@ class TradingCommands(commands.Cog):
                 inline=True
             )
             
-            # 价格信息
+            # 入场和止损止盈
             if advice.direction.value != "NEUTRAL":
-                price_info = (
+                # 入场范围
+                entry_info = (
                     f"```\n"
-                    f"Current/当前:   ${advice.current_price:>12,.2f}\n"
-                    f"Stop Loss/止损: ${advice.stop_loss:>12,.2f}\n"
-                    f"Take Profit/止盈:${advice.take_profit:>12,.2f}\n"
+                    f"Entry Range / 入场范围:\n"
+                    f"  ${advice.entry_low:>12,.2f} - ${advice.entry_high:,.2f}\n"
+                    f"Current / 当前: ${advice.current_price:>12,.2f}\n"
                     f"```"
                 )
-                embed.add_field(name="Price Levels / 价格", value=price_info, inline=False)
+                embed.add_field(name="📍 Entry / 入场", value=entry_info, inline=True)
+                
+                # 止损
+                sl_pct = abs(advice.stop_loss - advice.current_price) / advice.current_price * 100
+                sl_info = f"```\n${advice.stop_loss:,.2f}\n({sl_pct:.1f}% risk)\n```"
+                embed.add_field(name="🛑 Stop Loss / 止损", value=sl_info, inline=True)
+                
+                # 风险收益比
+                rr_info = f"```\nR:R = 1:{advice.risk_reward_ratio:.1f}\n```"
+                embed.add_field(name="⚖️ Risk/Reward", value=rr_info, inline=True)
+                
+                # 多级止盈
+                tp_info = (
+                    f"```\n"
+                    f"TP1 (保守): ${advice.tp1:>12,.2f}\n"
+                    f"TP2 (标准): ${advice.tp2:>12,.2f}\n"
+                    f"TP3 (激进): ${advice.tp3:>12,.2f}\n"
+                    f"```"
+                )
+                embed.add_field(name="🎯 Take Profit / 止盈", value=tp_info, inline=False)
+                
+                # 支撑压力位
+                if advice.supports or advice.resistances:
+                    sr_text = "```\n"
+                    if advice.resistances:
+                        sr_text += "Resistance / 压力位:\n"
+                        for r in advice.resistances[:3]:
+                            sr_text += f"  🔴 ${r:,.2f}\n"
+                    sr_text += f"  ➡️ ${advice.current_price:,.2f} (current)\n"
+                    if advice.supports:
+                        sr_text += "Support / 支撑位:\n"
+                        for s in advice.supports[:3]:
+                            sr_text += f"  🟢 ${s:,.2f}\n"
+                    sr_text += "```"
+                    embed.add_field(name="📊 S/R Levels / 支撑压力", value=sr_text, inline=False)
             
             # Z-Scores
             z_text = "```\n"

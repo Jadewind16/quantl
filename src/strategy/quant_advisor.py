@@ -70,13 +70,29 @@ class QuantAdvice:
     stop_loss: float
     take_profit: float
     
+    # 入场范围
+    entry_low: float = 0.0      # 入场下限
+    entry_high: float = 0.0     # 入场上限
+    
+    # 多级止盈
+    tp1: float = 0.0            # 止盈1 (保守)
+    tp2: float = 0.0            # 止盈2 (标准)
+    tp3: float = 0.0            # 止盈3 (激进)
+    
+    # 支撑压力位
+    supports: List[float] = field(default_factory=list)      # 支撑位
+    resistances: List[float] = field(default_factory=list)   # 压力位
+    
+    # 风险收益比
+    risk_reward_ratio: float = 0.0
+    
     # 仓位建议
-    position_size_pct: float    # 建议仓位 (占总资金%)
-    kelly_fraction: float       # Kelly criterion
+    position_size_pct: float = 0.0   # 建议仓位 (占总资金%)
+    kelly_fraction: float = 0.0       # Kelly criterion
     
     # 市场分析
-    market_regime: MarketRegime
-    volatility_percentile: float  # 当前波动率在历史中的百分位
+    market_regime: MarketRegime = MarketRegime.RANGING
+    volatility_percentile: float = 50.0  # 当前波动率在历史中的百分位
     
     # 因子分析
     factors: Dict[str, float] = field(default_factory=dict)
@@ -173,33 +189,67 @@ class QuantAdvisor:
             composite_score, win_prob, expected_return, regime, z_scores
         )
         
-        # 6. 计算止损止盈 (基于波动率)
+        # 6. 计算支撑压力位
+        supports, resistances = self._calculate_support_resistance(df)
+        
+        # 7. 计算止损止盈和入场范围 (基于波动率和支撑压力)
         atr = current['atr'] if not pd.isna(current['atr']) else current_price * 0.02
         volatility_adjusted_atr = self._adjust_for_regime(atr, regime)
-        
+
         if direction == Direction.LONG:
-            stop_loss = current_price - (volatility_adjusted_atr * 2)
-            take_profit = current_price + (volatility_adjusted_atr * 3)
+            # 止损：ATR 或最近支撑位下方
+            nearest_support = supports[0] if supports else current_price - volatility_adjusted_atr * 2
+            stop_loss = min(current_price - volatility_adjusted_atr * 2, nearest_support * 0.995)
+            
+            # 入场范围：当前价到最近支撑位之间
+            entry_low = max(nearest_support, current_price - volatility_adjusted_atr * 0.5)
+            entry_high = current_price + volatility_adjusted_atr * 0.3
+            
+            # 多级止盈：基于压力位和 ATR
+            tp1 = current_price + volatility_adjusted_atr * 1.5  # 保守
+            tp2 = current_price + volatility_adjusted_atr * 2.5  # 标准
+            tp3 = resistances[0] if resistances else current_price + volatility_adjusted_atr * 4  # 激进
+            take_profit = tp2
+            
         elif direction == Direction.SHORT:
-            stop_loss = current_price + (volatility_adjusted_atr * 2)
-            take_profit = current_price - (volatility_adjusted_atr * 3)
+            # 止损：ATR 或最近压力位上方
+            nearest_resistance = resistances[0] if resistances else current_price + volatility_adjusted_atr * 2
+            stop_loss = max(current_price + volatility_adjusted_atr * 2, nearest_resistance * 1.005)
+            
+            # 入场范围
+            entry_low = current_price - volatility_adjusted_atr * 0.3
+            entry_high = min(nearest_resistance, current_price + volatility_adjusted_atr * 0.5)
+            
+            # 多级止盈
+            tp1 = current_price - volatility_adjusted_atr * 1.5
+            tp2 = current_price - volatility_adjusted_atr * 2.5
+            tp3 = supports[0] if supports else current_price - volatility_adjusted_atr * 4
+            take_profit = tp2
         else:
             stop_loss = current_price
             take_profit = current_price
+            entry_low = current_price
+            entry_high = current_price
+            tp1 = tp2 = tp3 = current_price
         
-        # 7. Kelly Criterion 仓位
+        # 8. 风险收益比
+        risk = abs(current_price - stop_loss)
+        reward = abs(take_profit - current_price)
+        risk_reward_ratio = reward / risk if risk > 0 else 0
+
+        # 9. Kelly Criterion 仓位
         kelly = self._kelly_criterion(win_prob, expected_return, volatility_adjusted_atr / current_price)
         position_size = min(kelly * 100, 10)  # 最大 10%
-        
-        # 8. 波动率百分位
+
+        # 10. 波动率百分位
         vol_percentile = self._calculate_volatility_percentile(df)
-        
-        # 9. 生成信号说明
+
+        # 11. 生成信号说明
         signals, warnings = self._generate_signals(factors, z_scores, regime, vol_percentile)
-        
+
         # 置信度 = 综合评分的绝对值 * 胜率
         confidence = min(100, abs(composite_score) * 20 * win_prob)
-        
+
         return QuantAdvice(
             symbol=symbol,
             direction=direction,
@@ -208,8 +258,16 @@ class QuantAdvisor:
             win_probability=win_prob,
             current_price=current_price,
             entry_price=current_price,
+            entry_low=entry_low,
+            entry_high=entry_high,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            supports=supports,
+            resistances=resistances,
+            risk_reward_ratio=risk_reward_ratio,
             position_size_pct=position_size,
             kelly_fraction=kelly,
             market_regime=regime,
@@ -727,6 +785,75 @@ class QuantAdvisor:
         }
         return atr * multipliers.get(regime, 1.0)
     
+    def _calculate_support_resistance(self, df: pd.DataFrame, n_levels: int = 3) -> Tuple[List[float], List[float]]:
+        """
+        计算支撑和压力位
+        
+        使用方法：
+        1. 近期高低点
+        2. 成交量加权价格
+        3. 整数关口
+        """
+        current_price = df['close'].iloc[-1]
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        supports = []
+        resistances = []
+        
+        # 方法1：近期低点作为支撑，高点作为压力
+        # 使用滚动窗口找局部极值
+        window = 10
+        
+        for i in range(len(df) - window, max(0, len(df) - 50), -window):
+            # 局部最低点 = 支撑
+            local_low = low.iloc[i:i+window].min()
+            if local_low < current_price and local_low not in supports:
+                supports.append(local_low)
+            
+            # 局部最高点 = 压力
+            local_high = high.iloc[i:i+window].max()
+            if local_high > current_price and local_high not in resistances:
+                resistances.append(local_high)
+        
+        # 方法2：重要均线作为支撑/压力
+        if 'sma_20' in df.columns and not pd.isna(df['sma_20'].iloc[-1]):
+            sma20 = df['sma_20'].iloc[-1]
+            if sma20 < current_price:
+                supports.append(sma20)
+            else:
+                resistances.append(sma20)
+        
+        if 'sma_50' in df.columns and not pd.isna(df['sma_50'].iloc[-1]):
+            sma50 = df['sma_50'].iloc[-1]
+            if sma50 < current_price:
+                supports.append(sma50)
+            else:
+                resistances.append(sma50)
+        
+        # 方法3：整数关口（心理价位）
+        magnitude = 10 ** (len(str(int(current_price))) - 2)  # 例如 BTC 90000 -> magnitude = 1000
+        round_price = round(current_price / magnitude) * magnitude
+        
+        # 下方整数关口
+        for i in range(1, 4):
+            level = round_price - i * magnitude
+            if level < current_price and level > 0:
+                supports.append(level)
+        
+        # 上方整数关口
+        for i in range(1, 4):
+            level = round_price + i * magnitude
+            if level > current_price:
+                resistances.append(level)
+        
+        # 排序并去重
+        supports = sorted(list(set(supports)), reverse=True)[:n_levels]  # 从高到低
+        resistances = sorted(list(set(resistances)))[:n_levels]  # 从低到高
+        
+        return supports, resistances
+
     def _calculate_volatility_percentile(self, df: pd.DataFrame) -> float:
         """计算当前波动率在历史中的百分位"""
         returns = df['close'].pct_change()

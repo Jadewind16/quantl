@@ -132,3 +132,4 @@ class TestDataFetching:
         assert "price" in price
         assert price["price"] > 0
 
+

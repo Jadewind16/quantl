@@ -106,3 +106,4 @@ class TestSignalType:
         assert SignalType.NEUTRAL.value == "NEUTRAL"
         assert SignalType.CLOSE.value == "CLOSE"
 
+
