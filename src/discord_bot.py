@@ -21,8 +21,18 @@ from src.strategy.signals import SignalGenerator, SignalType
 from src.strategy.indicators import calculate_all_indicators
 from src.strategy.advisor import TradingAdvisor, Direction, RiskLevel
 from src.strategy.quant_advisor import QuantAdvisor, MarketRegime
-from src.strategy.ar_model import LinearARModel, load_ar_model, train_ar_model, save_ar_model
 from src.utils.logger import log
+
+# AR 模型功能是可选的 (需要 PyTorch)
+try:
+    from src.strategy.ar_model import LinearARModel, load_ar_model, train_ar_model, save_ar_model
+    AR_MODEL_AVAILABLE = True
+except ImportError:
+    AR_MODEL_AVAILABLE = False
+    LinearARModel = None
+    load_ar_model = None
+    train_ar_model = None
+    save_ar_model = None
 from src.utils.charts import create_candlestick_chart, create_indicator_chart
 
 # 加载环境变量
@@ -70,6 +80,11 @@ class TradingBot(commands.Bot):
     
     def _load_ar_model(self) -> bool:
         """加载 AR 模型"""
+        if not AR_MODEL_AVAILABLE:
+            log.warning("PyTorch not available - AR model features disabled")
+            self.ar_model = None
+            return False
+        
         try:
             if self.ar_model_path.exists():
                 self.ar_model = load_ar_model(str(self.ar_model_path))
@@ -98,6 +113,9 @@ class TradingBot(commands.Bot):
     
     def train_new_model(self, symbol: str, timeframe: str, n_lags: int = 3, limit: int = 500) -> dict:
         """训练新的 AR 模型"""
+        if not AR_MODEL_AVAILABLE:
+            return {"success": False, "error": "PyTorch not installed - cannot train model"}
+        
         try:
             # 获取数据
             df = self.fetcher.get_klines(symbol, timeframe, limit=limit)

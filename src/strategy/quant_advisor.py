@@ -2,24 +2,41 @@
 """
 量化交易建议生成器
 使用统计学方法和因子模型，而非硬编码规则
-支持 AR (自回归) 模型预测因子
+支持 AR (自回归) 模型预测因子 (可选，需要 PyTorch)
 """
 import pandas as pd
 import numpy as np
-import torch
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 from scipy import stats
 
+# PyTorch 是可选的
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.strategy.indicators import TechnicalIndicators, calculate_all_indicators
-from src.strategy.ar_model import LinearARModel, load_ar_model
 from src.utils.logger import log
+
+# AR 模型也是可选的
+if TORCH_AVAILABLE:
+    try:
+        from src.strategy.ar_model import LinearARModel, load_ar_model
+    except ImportError:
+        LinearARModel = None
+        load_ar_model = None
+else:
+    LinearARModel = None
+    load_ar_model = None
 
 
 class Direction(Enum):
@@ -104,10 +121,13 @@ class QuantAdvisor:
         self.z_threshold = 2.0  # 统计显著性阈值
         self.ar_n_lags = ar_n_lags
         
-        # 加载 AR 模型
-        if ar_model is not None:
+        # 加载 AR 模型 (需要 PyTorch)
+        if not TORCH_AVAILABLE:
+            log.warning("PyTorch not available - AR model features disabled")
+            self.ar_model = None
+        elif ar_model is not None:
             self.ar_model = ar_model
-        elif ar_model_path is not None:
+        elif ar_model_path is not None and load_ar_model is not None:
             try:
                 self.ar_model = load_ar_model(ar_model_path)
                 log.info(f"Loaded AR model from {ar_model_path}")
@@ -356,14 +376,14 @@ class QuantAdvisor:
     def _calculate_ar_prediction(self, returns: pd.Series) -> Optional[float]:
         """
         使用 AR 模型计算预测值
-        
+
         Args:
             returns: 收益率序列
-            
+
         Returns:
             预测的下一期 log return
         """
-        if self.ar_model is None:
+        if not TORCH_AVAILABLE or self.ar_model is None:
             return None
         
         # 获取最近 n_lags 个 log returns
@@ -617,10 +637,10 @@ class QuantAdvisor:
     def _validate_ar_signals(self, df: pd.DataFrame, returns: pd.Series) -> Tuple[Optional[float], Optional[float]]:
         """
         用 AR 模型验证历史信号
-        
+
         回测最近 N 个预测的实际表现
         """
-        if self.ar_model is None or len(df) < 50:
+        if not TORCH_AVAILABLE or self.ar_model is None or len(df) < 50:
             return None, None
         
         try:
