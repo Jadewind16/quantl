@@ -637,13 +637,13 @@ class TradingCommands(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Error: {e}")
     
-    @app_commands.command(name="advice", description="Get trading advice / 获取交易建议")
+    @app_commands.command(name="ta", description="Technical Analysis / 传统技术分析")
     @app_commands.describe(
         symbol="Trading pair (e.g., BTC, ETH)",
         timeframe="Timeframe for analysis (1h, 4h, 1d)"
     )
-    async def advice(self, interaction: discord.Interaction, symbol: str = "BTC", timeframe: str = "1h"):
-        """获取交易建议"""
+    async def ta(self, interaction: discord.Interaction, symbol: str = "BTC", timeframe: str = "1h"):
+        """传统技术分析 (RSI, MACD, BB 等规则型分析)"""
         await interaction.response.defer()
         
         try:
@@ -1046,6 +1046,172 @@ class TradingCommands(commands.Cog):
         
         await interaction.channel.send(embed=embed)
 
+    @app_commands.command(name="predict", description="AR Model Prediction / AI模型预测")
+    @app_commands.describe(
+        symbol="Trading pair (e.g., BTC, ETH)",
+        timeframe="Timeframe (1m, 5m, 15m, 1h, 4h, 1d)"
+    )
+    async def predict(self, interaction: discord.Interaction, symbol: str = "BTC", timeframe: str = "1h"):
+        """
+        纯 AR 模型预测
+        直接使用模型给出交易建议，不混合其他因子
+        """
+        await interaction.response.defer()
+        
+        # 检查模型是否可用
+        if not AR_MODEL_AVAILABLE:
+            embed = discord.Embed(
+                title="❌ PyTorch Not Available",
+                description="AR model requires PyTorch. Please install it first.\n需要安装 PyTorch。",
+                color=0xFF0000
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        if self.bot.ar_model is None:
+            embed = discord.Embed(
+                title="❌ No Model Loaded / 模型未加载",
+                description="Use `/train_model` to train a new model first.\n请先使用 `/train_model` 训练模型。",
+                color=0xFF0000
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
+        try:
+            import torch
+            import numpy as np
+            
+            formatted_symbol = f"{symbol.upper()}/USDT:USDT"
+            
+            # 获取数据
+            loop = asyncio.get_event_loop()
+            df = await loop.run_in_executor(
+                None,
+                lambda: self.bot.fetcher.get_klines(formatted_symbol, timeframe, limit=100)
+            )
+            
+            if df is None or len(df) < 50:
+                await interaction.followup.send("Insufficient data / 数据不足")
+                return
+            
+            current_price = df['close'].iloc[-1]
+            returns = df['close'].pct_change().dropna()
+            log_returns = np.log(1 + returns).dropna()
+            
+            # AR 预测
+            n_lags = self.bot.ar_n_lags
+            if len(log_returns) < n_lags:
+                await interaction.followup.send("Not enough data for prediction / 数据不足")
+                return
+            
+            recent_log_rets = log_returns.iloc[-n_lags:].values[::-1].copy()
+            X = torch.tensor(recent_log_rets, dtype=torch.float32)
+            
+            with torch.no_grad():
+                predicted_log_return = self.bot.ar_model(X).item()
+            
+            # 转换为预期价格变化
+            predicted_return_pct = (np.exp(predicted_log_return) - 1) * 100
+            predicted_price = current_price * np.exp(predicted_log_return)
+            
+            # 计算历史准确率
+            correct = 0
+            total = 0
+            for i in range(50, len(log_returns) - 1):
+                hist_X = torch.tensor(log_returns.iloc[i-n_lags:i].values[::-1].copy(), dtype=torch.float32)
+                with torch.no_grad():
+                    pred = self.bot.ar_model(hist_X).item()
+                actual = log_returns.iloc[i]
+                if (pred > 0 and actual > 0) or (pred < 0 and actual < 0):
+                    correct += 1
+                total += 1
+            
+            accuracy = correct / total if total > 0 else 0.5
+            
+            # 根据预测决定方向
+            if predicted_log_return > 0.001:  # 预测涨 0.1%+
+                direction = "🟢 LONG / 做多"
+                color = 0x00FF00
+                action = "BUY"
+            elif predicted_log_return < -0.001:  # 预测跌 0.1%+
+                direction = "🔴 SHORT / 做空"
+                color = 0xFF0000
+                action = "SELL"
+            else:
+                direction = "⚪ NEUTRAL / 观望"
+                color = 0x808080
+                action = "WAIT"
+            
+            # 计算建议的入场和止损
+            atr = df['close'].rolling(14).std().iloc[-1]
+            if action == "BUY":
+                entry_low = current_price - atr * 0.3
+                entry_high = current_price + atr * 0.2
+                stop_loss = current_price - atr * 1.5
+                take_profit = predicted_price + atr * 0.5
+            elif action == "SELL":
+                entry_low = current_price - atr * 0.2
+                entry_high = current_price + atr * 0.3
+                stop_loss = current_price + atr * 1.5
+                take_profit = predicted_price - atr * 0.5
+            else:
+                entry_low = entry_high = stop_loss = take_profit = current_price
+            
+            # 置信度 = 预测强度 * 历史准确率
+            confidence = min(100, abs(predicted_log_return) * 5000 * accuracy)
+            
+            # 构建 embed
+            embed = discord.Embed(
+                title=f"🤖 [AI PREDICT] {symbol.upper()}/USDT",
+                description=f"AR Model ({n_lags}-lag) Prediction\n纯 AR 模型预测",
+                color=color,
+                timestamp=datetime.now()
+            )
+            
+            # 预测结果
+            embed.add_field(name="Direction / 方向", value=f"**{direction}**", inline=True)
+            embed.add_field(name="Confidence / 置信度", value=f"**{confidence:.0f}%**", inline=True)
+            embed.add_field(name="Accuracy / 准确率", value=f"**{accuracy:.1%}**", inline=True)
+            
+            # 价格预测
+            price_info = (
+                f"```\n"
+                f"Current / 当前:    {fmt_price(current_price)}\n"
+                f"Predicted / 预测:  {fmt_price(predicted_price)}\n"
+                f"Change / 变化:     {predicted_return_pct:+.3f}%\n"
+                f"```"
+            )
+            embed.add_field(name="📈 Price Prediction / 价格预测", value=price_info, inline=False)
+            
+            # 交易建议
+            if action != "WAIT":
+                trade_info = (
+                    f"```\n"
+                    f"Entry / 入场:  {fmt_price(entry_low)} - {fmt_price(entry_high)}\n"
+                    f"Stop / 止损:   {fmt_price(stop_loss)}\n"
+                    f"Target / 目标: {fmt_price(take_profit)}\n"
+                    f"```"
+                )
+                embed.add_field(name="💰 Trade Setup / 交易设置", value=trade_info, inline=False)
+            
+            # 模型权重解读
+            weights = self.bot.ar_model.linear.weight.data.numpy().flatten()
+            weight_text = "```\n"
+            for i, w in enumerate(weights):
+                bar = "█" * int(abs(w) * 20)
+                sign = "+" if w > 0 else "-"
+                weight_text += f"t-{i+1}: {sign}{abs(w):.3f} {bar}\n"
+            weight_text += "```"
+            embed.add_field(name="🧠 Model Weights / 模型权重", value=weight_text, inline=False)
+            
+            embed.set_footer(text=f"Timeframe: {timeframe} | Model: AR({n_lags})")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            log.error(f"Error in predict command: {e}")
+            await interaction.followup.send(f"Error: {e}")
+
     @app_commands.command(name="help", description="Show all commands")
     async def help_command(self, interaction: discord.Interaction):
         """帮助命令"""
@@ -1055,22 +1221,29 @@ class TradingCommands(commands.Cog):
         )
         
         commands_list = [
-            ("/price [symbol]", "Get current price (default: BTC)"),
-            ("/funding [symbol]", "Get funding rate"),
-            ("/signals [symbol]", "Check current trading signals"),
-            ("/indicators [symbol]", "Get technical indicators"),
-            ("/chart [symbol] [timeframe]", "Get candlestick chart"),
-            ("/analysis [symbol] [timeframe]", "Full analysis (K-line + RSI + MACD)"),
-            ("/advice [symbol] [timeframe]", "Rule-based trading advice / 规则型建议"),
-            ("/quant [symbol] [timeframe]", "Quantitative analysis / 量化分析"),
-            ("/model", "Show AR model info / 显示模型信息"),
-            ("/reload_model", "Reload AR model / 重新加载模型"),
-            ("/train_model [symbol] [timeframe]", "Train new AR model / 训练新模型"),
-            ("/watch [symbol]", "Add to watchlist"),
-            ("/unwatch [symbol]", "Remove from watchlist"),
-            ("/watchlist", "Show watchlist"),
-            ("/setalert", "Enable auto alerts in current channel"),
-            ("/stopalert", "Disable auto alerts"),
+            ("📊 **市场数据**", ""),
+            ("/price [symbol]", "当前价格 / Current price"),
+            ("/funding [symbol]", "资金费率 / Funding rate"),
+            ("/indicators [symbol]", "技术指标 / Technical indicators"),
+            ("/chart [symbol] [tf]", "K线图 / Candlestick chart"),
+            ("/analysis [symbol] [tf]", "完整图表分析 / Full chart analysis"),
+            ("", ""),
+            ("📈 **交易建议**", ""),
+            ("/ta [symbol] [tf]", "传统技术分析 (RSI/MACD/BB)"),
+            ("/quant [symbol] [tf]", "量化分析 (多因子+支撑压力)"),
+            ("/predict [symbol] [tf]", "🤖 AI模型预测 (纯AR模型)"),
+            ("", ""),
+            ("🤖 **模型管理**", ""),
+            ("/model", "查看模型状态"),
+            ("/train_model [symbol] [tf]", "训练新模型"),
+            ("/reload_model", "重新加载模型"),
+            ("", ""),
+            ("👀 **监控**", ""),
+            ("/watch [symbol]", "添加监控"),
+            ("/unwatch [symbol]", "移除监控"),
+            ("/watchlist", "查看监控列表"),
+            ("/setalert", "开启自动提醒"),
+            ("/stopalert", "关闭自动提醒"),
         ]
         
         for cmd, desc in commands_list:
