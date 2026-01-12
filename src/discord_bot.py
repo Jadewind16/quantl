@@ -39,6 +39,42 @@ from src.utils.charts import create_candlestick_chart, create_indicator_chart
 load_dotenv()
 
 
+def fmt_price(price: float, sig_figs: int = 5) -> str:
+    """
+    格式化价格，显示 4-6 位有效数字
+    
+    Examples:
+        94123.456 -> $94,123
+        0.00012345 -> $0.0001235
+        1.2345 -> $1.2345
+    """
+    if price == 0:
+        return "$0"
+    
+    abs_price = abs(price)
+    
+    if abs_price >= 10000:
+        # 大数：显示整数部分 + 1-2位小数
+        return f"${price:,.1f}"
+    elif abs_price >= 100:
+        # 中等数：2位小数
+        return f"${price:,.2f}"
+    elif abs_price >= 1:
+        # 1-100：4位小数
+        return f"${price:.4f}"
+    elif abs_price >= 0.01:
+        # 小数：5位小数
+        return f"${price:.5f}"
+    else:
+        # 非常小的数：用有效数字格式
+        return f"${price:.{sig_figs}g}"
+
+
+def fmt_pct(value: float, decimals: int = 2) -> str:
+    """格式化百分比"""
+    return f"{value:.{decimals}f}%"
+
+
 class TradingBot(commands.Bot):
     """Discord Trading Bot"""
     
@@ -263,7 +299,7 @@ class TradingBot(commands.Bot):
         )
         
         embed.add_field(name="Strategy", value=signal.strategy, inline=True)
-        embed.add_field(name="Price", value=f"${signal.price:,.2f}", inline=True)
+        embed.add_field(name="Price", value=fmt_price(signal.price), inline=True)
         embed.add_field(name="Confidence", value=f"{signal.confidence:.0%}", inline=True)
         embed.add_field(name="Reason", value=signal.reason, inline=False)
         
@@ -311,7 +347,7 @@ class TradingCommands(commands.Cog):
             
             embed.add_field(
                 name="Price", 
-                value=f"${price_data['price']:,.2f}", 
+                value=fmt_price(price_data['price']), 
                 inline=True
             )
             embed.add_field(
@@ -321,12 +357,12 @@ class TradingCommands(commands.Cog):
             )
             embed.add_field(
                 name="24h High", 
-                value=f"${price_data['high_24h']:,.2f}", 
+                value=fmt_price(price_data['high_24h']), 
                 inline=True
             )
             embed.add_field(
                 name="24h Low", 
-                value=f"${price_data['low_24h']:,.2f}", 
+                value=fmt_price(price_data['low_24h']), 
                 inline=True
             )
             
@@ -434,7 +470,7 @@ class TradingCommands(commands.Cog):
             # 趋势指标
             embed.add_field(
                 name="Moving Averages",
-                value=f"SMA20: ${latest['sma_20']:,.2f}\nSMA50: ${latest['sma_50']:,.2f}\nEMA12: ${latest['ema_12']:,.2f}",
+                value=f"SMA20: {fmt_price(latest['sma_20'])}\nSMA50: {fmt_price(latest['sma_50'])}\nEMA12: {fmt_price(latest['ema_12'])}",
                 inline=True
             )
             
@@ -455,21 +491,21 @@ class TradingCommands(commands.Cog):
             # 布林带
             embed.add_field(
                 name="Bollinger Bands",
-                value=f"Upper: ${latest['bb_upper']:,.2f}\nMiddle: ${latest['bb_middle']:,.2f}\nLower: ${latest['bb_lower']:,.2f}",
+                value=f"Upper: {fmt_price(latest['bb_upper'])}\nMiddle: {fmt_price(latest['bb_middle'])}\nLower: {fmt_price(latest['bb_lower'])}",
                 inline=True
             )
             
             # ATR
             embed.add_field(
                 name="Volatility",
-                value=f"ATR: ${latest['atr']:.2f}",
+                value=f"ATR: {fmt_price(latest['atr'])}",
                 inline=True
             )
             
             # 当前价格
             embed.add_field(
                 name="Current Price",
-                value=f"${latest['close']:,.2f}",
+                value=fmt_price(latest['close']),
                 inline=True
             )
             
@@ -678,12 +714,12 @@ class TradingCommands(commands.Cog):
             if advice.direction != Direction.NEUTRAL:
                 price_info = (
                     f"```\n"
-                    f"Current/当前:  ${data['current_price']:>12,.2f}\n"
-                    f"Entry/入场:    ${data['entry_price']:>12,.2f}\n"
-                    f"Stop/止损:     ${data['stop_loss']:>12,.2f}\n"
-                    f"TP1/止盈1:     ${data['take_profit_1']:>12,.2f}\n"
-                    f"TP2/止盈2:     ${data['take_profit_2']:>12,.2f}\n"
-                    f"TP3/止盈3:     ${data['take_profit_3']:>12,.2f}\n"
+                    f"Current/当前:  {fmt_price(data['current_price']):>14}\n"
+                    f"Entry/入场:    {fmt_price(data['entry_price']):>14}\n"
+                    f"Stop/止损:     {fmt_price(data['stop_loss']):>14}\n"
+                    f"TP1/止盈1:     {fmt_price(data['take_profit_1']):>14}\n"
+                    f"TP2/止盈2:     {fmt_price(data['take_profit_2']):>14}\n"
+                    f"TP3/止盈3:     {fmt_price(data['take_profit_3']):>14}\n"
                     f"```"
                 )
                 embed.add_field(
@@ -695,13 +731,13 @@ class TradingCommands(commands.Cog):
                 # 风险收益比
                 embed.add_field(
                     name="R/R Ratio / 盈亏比",
-                    value=f"**{data['risk_reward']:.2f}:1**",
+                    value=f"**{data['risk_reward']:.1f}:1**",
                     inline=True
                 )
             else:
                 embed.add_field(
                     name="Current Price / 当前价格",
-                    value=f"**${data['current_price']:,.2f}**",
+                    value=f"**{fmt_price(data['current_price'])}**",
                     inline=False
                 )
             
@@ -823,27 +859,27 @@ class TradingCommands(commands.Cog):
                 entry_info = (
                     f"```\n"
                     f"Entry Range / 入场范围:\n"
-                    f"  ${advice.entry_low:>12,.2f} - ${advice.entry_high:,.2f}\n"
-                    f"Current / 当前: ${advice.current_price:>12,.2f}\n"
+                    f"  {fmt_price(advice.entry_low)} - {fmt_price(advice.entry_high)}\n"
+                    f"Current / 当前: {fmt_price(advice.current_price)}\n"
                     f"```"
                 )
                 embed.add_field(name="📍 Entry / 入场", value=entry_info, inline=True)
                 
                 # 止损
                 sl_pct = abs(advice.stop_loss - advice.current_price) / advice.current_price * 100
-                sl_info = f"```\n${advice.stop_loss:,.2f}\n({sl_pct:.1f}% risk)\n```"
+                sl_info = f"```\n{fmt_price(advice.stop_loss)}\n({sl_pct:.2f}% risk)\n```"
                 embed.add_field(name="🛑 Stop Loss / 止损", value=sl_info, inline=True)
                 
                 # 风险收益比
-                rr_info = f"```\nR:R = 1:{advice.risk_reward_ratio:.1f}\n```"
+                rr_info = f"```\nR:R = 1:{advice.risk_reward_ratio:.2f}\n```"
                 embed.add_field(name="⚖️ Risk/Reward", value=rr_info, inline=True)
                 
                 # 多级止盈
                 tp_info = (
                     f"```\n"
-                    f"TP1 (保守): ${advice.tp1:>12,.2f}\n"
-                    f"TP2 (标准): ${advice.tp2:>12,.2f}\n"
-                    f"TP3 (激进): ${advice.tp3:>12,.2f}\n"
+                    f"TP1 (保守): {fmt_price(advice.tp1)}\n"
+                    f"TP2 (标准): {fmt_price(advice.tp2)}\n"
+                    f"TP3 (激进): {fmt_price(advice.tp3)}\n"
                     f"```"
                 )
                 embed.add_field(name="🎯 Take Profit / 止盈", value=tp_info, inline=False)
@@ -854,12 +890,12 @@ class TradingCommands(commands.Cog):
                     if advice.resistances:
                         sr_text += "Resistance / 压力位:\n"
                         for r in advice.resistances[:3]:
-                            sr_text += f"  🔴 ${r:,.2f}\n"
-                    sr_text += f"  ➡️ ${advice.current_price:,.2f} (current)\n"
+                            sr_text += f"  🔴 {fmt_price(r)}\n"
+                    sr_text += f"  ➡️ {fmt_price(advice.current_price)} (current)\n"
                     if advice.supports:
                         sr_text += "Support / 支撑位:\n"
                         for s in advice.supports[:3]:
-                            sr_text += f"  🟢 ${s:,.2f}\n"
+                            sr_text += f"  🟢 {fmt_price(s)}\n"
                     sr_text += "```"
                     embed.add_field(name="📊 S/R Levels / 支撑压力", value=sr_text, inline=False)
             
